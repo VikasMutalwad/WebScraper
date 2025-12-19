@@ -1,362 +1,289 @@
 import React, { useState, useEffect, useRef } from "react";
-import LoginPage from "./LoginPage"; // Make sure LoginPage.js is in src folder
+import { supabase } from "./supabaseClient"; 
+import html2pdf from 'html2pdf.js';
 import "./App.css";
 
+// ---------------------------------------------------------
+// 1. REGISTER FORM COMPONENT
+// ---------------------------------------------------------
 function RegisterForm({ onRegister }) {
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState("");
+  const [status, setStatus] = useState({ msg: "", type: "" });
 
-  // Dummy register simulation
-  const fakeRegisterAPI = async ({ username, password }) => {
-    return new Promise((resolve) => setTimeout(() => resolve({ username }), 1000));
-  };
-
-  const handleSubmit = async e => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    try {
-      await fakeRegisterAPI({ username, password });
-      setSuccess("Registration successful! Please login.");
-      setError("");
-      onRegister();
-    } catch (err) {
-      setError(err.message || "Registration failed");
-      setSuccess("");
+    const { error } = await supabase.auth.signUp({ email, password });
+    if (error) setStatus({ msg: error.message, type: "error" });
+    else {
+      setStatus({ msg: "Registration successful! Redirecting...", type: "success" });
+      setTimeout(onRegister, 2000);
     }
   };
 
   return (
-    <form onSubmit={handleSubmit} className="auth-form">
-      <h2>Register</h2>
-      {error && <p className="error-msg">{error}</p>}
-      {success && <p className="success-msg">{success}</p>}
-      <label>Username:
-        <input value={username} onChange={e => setUsername(e.target.value)} required />
-      </label>
-      <label>Password:
-        <input type="password" value={password} onChange={e => setPassword(e.target.value)} required />
-      </label>
-      <button type="submit">Register</button>
-      <p className="link-text" onClick={onRegister} tabIndex={0} role="button" aria-label="Go to Login page">
-        Already have an account? Login
-      </p>
-    </form>
+    <div className="auth-container">
+      <form onSubmit={handleSubmit} className="auth-form">
+        <h2>Register</h2>
+        {status.msg && <p className={`${status.type}-msg`} style={{display: 'block'}}>{status.msg}</p>}
+        <label>Email: <input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></label>
+        <label>Password: <input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></label>
+        <button type="submit">Register</button>
+        <p className="link-text" onClick={onRegister} style={{cursor:'pointer', marginTop:'15px'}}>Already have an account? Login</p>
+      </form>
+    </div>
   );
 }
 
-function MainAppUI({ user, guest, onLogout }) {
+// ---------------------------------------------------------
+// 2. MAIN APPLICATION UI
+// ---------------------------------------------------------
+function MainAppUI({ user, guest, onLogout, history, fetchHistory }) {
   const [activeTab, setActiveTab] = useState("title");
   const [toast, setToast] = useState({ message: "", type: "" });
-  const [headingsFilter, setHeadingsFilter] = useState("");
-  const [linksFilter, setLinksFilter] = useState("");
-  const [data, setData] = useState({});
+  const [data, setData] = useState({ url: "" });
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [headingsFilter, setHeadingsFilter] = useState(""); // Filter Feature
+  const [linksFilter, setLinksFilter] = useState(""); // Filter Feature
   const pdfRef = useRef(null);
 
-  useEffect(() => {
-    // Reset states or fetch user history here if needed
-  }, [user]);
-
-  // Copy to clipboard helper
-  const copyToClipboard = (text) => {
-    if (!text) return;
-    navigator.clipboard.writeText(text)
-      .then(() => setToast({ message: "Copied to clipboard!", type: "success" }))
-      .catch(() => setToast({ message: "Failed to copy", type: "error" }));
+  const showToast = (message, type) => {
+    setToast({ message, type });
+    setTimeout(() => setToast({ message: "", type: "" }), 3000);
   };
 
-  // JSON export (kept simple)
-  const exportData = () => {
-    if (!data) return;
-    const exportDataStr = JSON.stringify(data, null, 2);
-    const blob = new Blob([exportDataStr], { type: "application/json" });
-    const url_ = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url_;
-    a.download = "extractify_data.json";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setToast({ message: "Exported data as JSON file", type: "success" });
-  };
-
-  // Your scraping UI & API calls go here. For demo, simple placeholder:
-  const handleScrape = async () => {
-    if (!data.url) {
-      setToast({ message: "Please enter a URL", type: "error" });
-      return;
-    }
+ const handleScrape = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!data.url) return showToast("Please enter a URL", "error");
+    
     setLoading(true);
-    setError("");
+
     try {
-      // Simulate scraping process
+      // --- NEW FEATURE: Invoke your Supabase Edge Function ---
+      // This replaces the Microlink fetch and runs on your own backend
+      const { data: responseData, error: funcError } = await supabase.functions.invoke('scraper', {
+        body: { url: data.url }
+      });
+
+      if (funcError) throw funcError;
+
+      // --- MAPPING: Ensure the cloud response matches your UI structure ---
       const result = {
-        title: "Example Page Title",
-        headings: ["Heading 1", "Heading 2"],
-        links: ["https://example.com", "https://openai.com"],
-        images: ["https://placekitten.com/200/300"],
-        meta: { description: "Example meta description", keywords: "example, scrape", author: "Admin" },
+        url: data.url,
+        title: responseData.title || "No Title",
+        headings: responseData.headings || (responseData.description ? [responseData.description] : ["No headings found"]),
+        links: responseData.links || [data.url],
+        images: responseData.images || [],
+        meta: responseData.meta || { 
+          description: responseData.description || "N/A", 
+          author: responseData.author || "N/A",
+          publisher: responseData.publisher || "N/A"
+        }
       };
+
+      // Update the UI state
       setData(result);
-      setActiveTab("title");
-      setToast({ message: "Data extracted successfully!", type: "success" });
-    } catch (e) {
-      setError("Failed to scrape. Please try again.");
+      showToast("Cloud extraction successful!", "success");
+
+      // --- EXISTING FEATURE: Save to History ---
+      if (!guest) {
+        // We use the 'user' variable which should be available in your App component scope
+        const { error: dbError } = await supabase
+          .from('scrapes')
+          .insert([{ 
+            user_id: user.id, 
+            url: data.url, 
+            title: result.title, 
+            data: result 
+          }]);
+          
+        if (dbError) console.error("History Save Error:", dbError.message);
+        
+        // Refresh history list
+        fetchHistory(user.id);
+      }
+
+    } catch (err) {
+      console.error("Scraping error:", err);
+      showToast("Scrape failed: " + (err.message || "Unknown error"), "error");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const filteredHeadings = (data.headings || []).filter(h =>
-    h.toLowerCase().includes(headingsFilter.toLowerCase())
-  );
-  const filteredLinks = (data.links || []).filter(l =>
-    l.toLowerCase().includes(linksFilter.toLowerCase())
-  );
-
-  const isValidUrl = (string) => {
-    try {
-      new URL(string);
-      return true;
-    } catch (_) {
-      return false;
-    }
+  const exportPDF = () => {
+    const options = {
+      margin: 10,
+      filename: `Extractify_${Date.now()}.pdf`,
+      html2canvas: { scale: 2, backgroundColor: '#1a1a2e' },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+    html2pdf().set(options).from(pdfRef.current).save();
   };
+
+  // Filter Logic
+  const filteredHeadings = data.headings?.filter(h => h.toLowerCase().includes(headingsFilter.toLowerCase())) || [];
 
   return (
-    <div className="container-main">
-      {toast.message && (
-        <div className={"toast " + toast.type} role="alert" aria-live="assertive">
-          {toast.message}
-          <button className="toast-close" aria-label="Close notification" onClick={() => setToast({ message: "", type: "" })}>&times;</button>
-        </div>
-      )}
+    <div className="container-main active">
+      {toast.message && <div className={`toast ${toast.type}`}>{toast.message}</div>}
 
-      <header className="branding animated-fadein">
-        <div className="logo-circle" title="Extractify Logo">E</div>
+      <header className="branding">
+        <div className="logo-circle">E</div>
         <h1 className="brand-name">Extractify</h1>
-        <p className="desc">Welcome, {guest ? "Guest" : user.username}!</p>
+        <p className="desc">Welcome, {guest ? "Guest" : user?.email}!</p>
         <button className="logout-btn" onClick={onLogout}>Logout</button>
       </header>
 
-      <form className="input-row animated-pop" onSubmit={e => { e.preventDefault(); handleScrape(); }} aria-label="Scrape URL form">
-        <input
-          type="text"
-          className="url-input"
-          placeholder="Paste any website URL…"
-          value={data.url || ""}
-          onChange={e => setData(prev => ({ ...prev, url: e.target.value }))}
-          disabled={loading}
-          aria-required="true"
+      <form className="input-row" style={{display:'flex', gap:'10px'}} onSubmit={handleScrape}>
+        <input 
+          className="url-input" 
+          placeholder="Paste URL..." 
+          value={data.url || ""} 
+          onChange={e => setData({...data, url: e.target.value})} 
         />
         <button className="scrape-btn" type="submit" disabled={loading}>
-          {loading ? "Extracting…" : "Extract"}
+          {loading ? "..." : "Extract"}
         </button>
       </form>
 
-      {error && <p className="error-msg" role="alert">{error}</p>}
-
-      {Object.keys(data).length > 0 && !loading && (
-        <>
-          <div role="tablist" className="tabbar animated-fadeinup" aria-label="Data Tabs">
+      {Object.keys(data).length > 1 && !loading && (
+        <div ref={pdfRef}>
+          <div className="tabbar">
             {["title", "headings", "images", "links", "metadata"].map(tab => (
-              <button
-                key={tab}
-                className={"tab" + (activeTab === tab ? " active" : "")}
-                onClick={() => setActiveTab(tab)}
-                role="tab"
-                aria-selected={activeTab === tab}
-                aria-controls={`${tab}-panel`}
-                id={`${tab}-tab`}
-              >
+              <button key={tab} className={`tab ${activeTab === tab ? "active" : ""}`} onClick={() => setActiveTab(tab)}>
                 {tab.charAt(0).toUpperCase() + tab.slice(1)}
               </button>
             ))}
           </div>
 
-          <div ref={pdfRef} className="tab-content animated-appear">
+          <div className="tab-content active">
             {activeTab === "title" && (
-              <div id="title-panel" role="tabpanel" aria-labelledby="title-tab" className="card">
+              <div className="card">
                 <h2>Page Title</h2>
-                <div className="card-data">
-                  <span className="card-highlight">{data.title || "No title found"}</span>
-                  <button className="copy-btn" onClick={() => copyToClipboard(data.title)} aria-label="Copy page title">📋 Copy</button>
-                </div>
+                <span className="card-highlight">{data.title}</span>
               </div>
             )}
 
             {activeTab === "headings" && (
-              <div id="headings-panel" role="tabpanel" aria-labelledby="headings-tab" className="card">
+              <div className="card">
                 <h2>Headings</h2>
-                <input
-                  type="search"
-                  className="filter-input"
-                  placeholder="Filter headings..."
-                  value={headingsFilter}
-                  onChange={e => setHeadingsFilter(e.target.value)}
-                  aria-label="Filter headings"
-                />
-                <div className="card-data">
-                  {filteredHeadings.length > 0 ? (
-                    <>
-                      <button
-                        className="copy-btn"
-                        onClick={() => copyToClipboard(filteredHeadings.join("\n"))}
-                        aria-label="Copy all headings"
-                      >
-                        📋 Copy All
-                      </button>
-                      <ul>
-                        {filteredHeadings.map((h, i) => (
-                          <li key={i} className="card-listitem">
-                            {h}{" "}
-                            <button
-                              className="copy-inline"
-                              onClick={() => copyToClipboard(h)}
-                              aria-label={`Copy heading ${i + 1}`}
-                            >
-                              📋
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </>
-                  ) : (
-                    <p className="muted">No headings match the filter</p>
-                  )}
-                </div>
+                <input className="url-input" placeholder="Filter headings..." onChange={e => setHeadingsFilter(e.target.value)} style={{marginBottom:'10px'}}/>
+                {filteredHeadings.map((h, i) => <p key={i} className="card-listitem">{h}</p>)}
               </div>
             )}
 
             {activeTab === "images" && (
-              <div id="images-panel" role="tabpanel" aria-labelledby="images-tab" className="card">
-                <h2>Images</h2>
-                <div className="image-gallery">
-                  {data.images && data.images.length > 0 ? (
-                    data.images.map((img, i) => (
-                      <img
-                        key={i}
-                        className="gallery-img animated-pop"
-                        src={img}
-                        alt={`img-${i}`}
-                        loading="lazy"
-                      />
-                    ))
-                  ) : (
-                    <p className="muted">No images found</p>
-                  )}
-                </div>
+              <div className="image-gallery">
+                {data.images.map((img, i) => <img key={i} src={img} className="gallery-img" alt="scraped" />)}
               </div>
             )}
 
             {activeTab === "links" && (
-              <div id="links-panel" role="tabpanel" aria-labelledby="links-tab" className="card">
+              <div className="card">
                 <h2>Links</h2>
-                <input
-                  type="search"
-                  className="filter-input"
-                  placeholder="Filter links..."
-                  value={linksFilter}
-                  onChange={e => setLinksFilter(e.target.value)}
-                  aria-label="Filter links"
-                />
-                <div className="card-data">
-                  {filteredLinks.length > 0 ? (
-                    <>
-                      <button
-                        className="copy-btn"
-                        onClick={() => copyToClipboard(filteredLinks.join("\n"))}
-                        aria-label="Copy all links"
-                      >
-                        📋 Copy All
-                      </button>
-                      <ul>
-                        {filteredLinks.map((l, i) => {
-                          const favicon = isValidUrl(l) ? `${new URL(l).origin}/favicon.ico` : null;
-                          return (
-                            <li key={i} className="card-listitem">
-                              {favicon && <img src={favicon} alt="favicon" className="favicon" />}
-                              <a href={l} target="_blank" rel="noreferrer" className="link" tabIndex={0}>
-                                {l}
-                              </a>{" "}
-                              <button
-                                className="copy-inline"
-                                onClick={() => copyToClipboard(l)}
-                                aria-label={`Copy link ${i + 1}`}
-                              >
-                                📋
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </>
-                  ) : (
-                    <p className="muted">No links match the filter</p>
-                  )}
-                </div>
+                {data.links.map((l, i) => <p key={i} style={{color:'#ffcc00', cursor:'pointer'}} onClick={() => window.open(l, '_blank')}>{l}</p>)}
               </div>
             )}
 
             {activeTab === "metadata" && (
-              <div id="metadata-panel" role="tabpanel" aria-labelledby="metadata-tab" className="card">
+              <div className="card">
                 <h2>Metadata</h2>
-                <div className="card-data">
-                  <p>
-                    <strong>Description:</strong> {data.meta?.description || "No description found"}
-                  </p>
-                  <p>
-                    <strong>Keywords:</strong> {data.meta?.keywords || "No keywords found"}
-                  </p>
-                  <p>
-                    <strong>Author:</strong> {data.meta?.author || "Not specified"}
-                  </p>
-                </div>
+                <p><strong>Description:</strong> {data.meta.description}</p>
+                <p><strong>Author:</strong> {data.meta.author}</p>
+                <p><strong>Publisher:</strong> {data.meta.publisher}</p>
               </div>
             )}
           </div>
 
           <div className="export-wrapper">
-            <button className="export-btn" onClick={exportData} aria-label="Export JSON">
-              📁 Export JSON
-            </button>
-            {/* Add other export buttons if you want */}
+            <button className="export-btn" onClick={() => {
+               const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+               const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'data.json'; a.click();
+            }}>📁 JSON</button>
+            <button className="export-btn" style={{background:'#ff5555', color:'white'}} onClick={exportPDF}>📄 PDF</button>
           </div>
-        </>
+        </div>
+      )}
+
+      {/* History Section */}
+      {!guest && history.length > 0 && (
+        <div className="history-section" style={{marginTop:'40px'}}>
+          <h3 style={{color:'#ffcc00'}}>Cloud History</h3>
+          {history.map(item => (
+            <div key={item.id} className="history-card" onClick={() => setData(item.data)}>
+              <strong>{item.title}</strong><br/><small>{item.url}</small>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
 }
 
+// ---------------------------------------------------------
+// 3. MAIN ENTRY POINT (APP)
+// ---------------------------------------------------------
 export default function App() {
-  const [user, setUser] = useState(null); // null = not logged in
+  const [user, setUser] = useState(null);
   const [guest, setGuest] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
+  const [history, setHistory] = useState([]);
+
+  const fetchHistory = async (uid) => {
+    const { data } = await supabase.from('scrapes').select('*').eq('user_id', uid).order('created_at', { ascending: false });
+    if (data) setHistory(data);
+  };
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        setUser(session.user);
+        fetchHistory(session.user.id);
+      }
+    });
+  }, []);
 
   if (!user && !guest) {
-    if (showRegister) {
-      return <RegisterForm onRegister={() => setShowRegister(false)} />;
-    }
+    if (showRegister) return <RegisterForm onRegister={() => setShowRegister(false)} />;
     return (
-      <LoginPage
-        onLogin={(userData) => {
-          setUser(userData);
-          setGuest(false);
-          setShowRegister(false);
-        }}
-        onGuest={() => {
-          setGuest(true);
-          setShowRegister(false);
-        }}
-        onShowRegister={() => setShowRegister(true)}
+      <LoginPage 
+        onLogin={async (email, password) => {
+          const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+          if (error) alert(error.message);
+          else { setUser(data.user); fetchHistory(data.user.id); }
+        }} 
+        onGuest={() => setGuest(true)} 
+        onShowRegister={() => setShowRegister(true)} 
       />
     );
   }
 
-  return <MainAppUI user={user} guest={guest} onLogout={() => {
-    setUser(null);
-    setGuest(false);
-    setShowRegister(false);
-  }} />;
+  return (
+    <MainAppUI 
+      user={user} 
+      guest={guest} 
+      history={history}
+      fetchHistory={fetchHistory}
+      onLogout={() => { supabase.auth.signOut(); setUser(null); setGuest(false); }} 
+    />
+  );
+}
+
+// Simple internal Login Component for App.js
+function LoginPage({ onLogin, onGuest, onShowRegister }) {
+  const [e, setE] = useState("");
+  const [p, setP] = useState("");
+  return (
+    <div className="auth-container">
+      <div className="auth-form">
+        <h2>Login</h2>
+        <input type="email" placeholder="Email" onChange={x => setE(x.target.value)} />
+        <input type="password" placeholder="Password" onChange={x => setP(x.target.value)} />
+        <button onClick={() => onLogin(e, p)}>Login</button>
+        <button onClick={onGuest} style={{marginTop:'10px', background:'#444'}}>Guest Mode</button>
+        <p onClick={onShowRegister} style={{cursor:'pointer', marginTop:'15px', color:'#ffcc00'}}>Register New Account</p>
+      </div>
+    </div>
+  );
 }
